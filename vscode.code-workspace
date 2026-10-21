@@ -1,0 +1,17 @@
+{
+    "folders": [
+        {
+            "name": "conduit-backend-sprin",
+            "path": "conduit-backend-sprin"
+        },
+        {
+            "name": "conduit-docker",
+            "path": "conduit-docker"
+        },
+        {
+            "name": ".",
+            "path": "."
+        }
+    ],
+    "settings": {}
+}

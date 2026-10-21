@@ -1,0 +1,320 @@
+##################################################
+# CONDUIT BACKEND - SPRING BOOT
+# Prompt template for Claude (Claude Code recommended)
+# Usage: open conduit-backend-spring/ as the working directory and paste this
+# whole file as the first message. ../conduit-openapi/openapi.yml must exist.
+##################################################
+
+You are a senior Java/Spring engineer. Build a production-quality REST backend.
+
+==================================================
+0. TECH STACK
+==================================================
+- Java 25
+- Spring Boot 4 (latest stable 4.x)
+- Spring Web (MVC)
+- Bean Validation (Jakarta Validation)
+- Spring Data JPA (Hibernate) + PostgreSQL
+- Spring Security (stateless) + JWT
+- springdoc-openapi (Swagger UI), version compatible with Spring Boot 4
+- Logging: SLF4J + Logback, JSON output, MDC request id
+- Build: Maven 
+- Tests: JUnit 5, Spring Boot Test, Testcontainers (PostgreSQL)
+
+
+==================================================
+1. PROJECT CONTEXT
+==================================================
+You are building the BACKEND of "Conduit", a Medium-style blogging platform
+(RealWorld). This backend is ONE of several interchangeable implementations
+(Spring, Go/Echo, FastAPI, .NET) of the SAME API contract. A single React
+frontend talks to whichever backend is running on port 8080, so every backend
+must behave identically on the wire.
+
+Source of truth: ../conduit-openapi/openapi.yml
+  - Read it completely before writing any code.
+  - Base URL: http://localhost:8080/api/v1  (every contract path lives under /api/v1)
+  - If this prompt and openapi.yml disagree, openapi.yml wins. Report the
+    conflict to me; do not silently pick one.
+  - Do NOT edit openapi.yml. If you believe it has a defect, list it in
+    NOTES.md at the end.
+
+Behaviour reference (optional, only if present): conduit-nextjs
+  - It is a working TypeScript implementation of the same features with a
+    DIFFERENT API shape (cookie sessions, flat payloads). Use it only to
+    understand business behaviour. Do not port its code or its wire format.
+
+Generated code: you may generate DTOs/stubs from openapi.yml at build time,
+but never commit generated output. Otherwise hand-write DTOs that match the
+schemas exactly.
+
+
+==================================================
+2. API CONTRACT SUMMARY (openapi.yml is authoritative)
+==================================================
+General
+- JSON only, camelCase, payloads wrapped in envelopes ({"user":...},
+  {"article":...}, {"articles":[...],"articlesCount":n}, {"comment":...},
+  {"comments":[...]}, {"profile":...}, {"tags":[...]}).
+- Timestamps: UTC, ISO-8601 date-time (e.g. 2026-10-21T10:15:30.123Z).
+- Authentication header: "Authorization: Token <jwt>"
+  The scheme word is "Token", NOT "Bearer". Do not accept other schemes.
+- Auth levels: REQUIRED (401 if missing/invalid), OPTIONAL (anonymous allowed;
+  if a token is sent but invalid or expired -> 401), NONE.
+
+Endpoints (all under /api/v1)
+  POST   /users/login                       NONE      200  {user}
+  POST   /users                             NONE      201  {user}
+  GET    /user                              REQUIRED  200  {user}
+  PUT    /user                              REQUIRED  200  {user}      (partial update)
+  GET    /profiles/{username}               OPTIONAL  200  {profile}
+  POST   /profiles/{username}/follow        REQUIRED  200  {profile}
+  DELETE /profiles/{username}/follow        REQUIRED  200  {profile}
+  GET    /articles                          OPTIONAL  200  {articles, articlesCount}
+         query: tag, author, favorited, offset, limit
+  POST   /articles                          REQUIRED  201  {article}
+  GET    /articles/feed                     REQUIRED  200  {articles, articlesCount}
+         query: offset, limit
+  GET    /articles/{slug}                   OPTIONAL  200  {article}
+  PUT    /articles/{slug}                   REQUIRED  200  {article}   (partial update)
+  DELETE /articles/{slug}                   REQUIRED  204  no body
+  GET    /articles/{slug}/comments          OPTIONAL  200  {comments}
+  POST   /articles/{slug}/comments          REQUIRED  201  {comment}
+  DELETE /articles/{slug}/comments/{id}     REQUIRED  204  no body
+  POST   /articles/{slug}/favorite          REQUIRED  200  {article}
+  DELETE /articles/{slug}/favorite          REQUIRED  200  {article}
+  GET    /tags                              NONE      200  {tags}
+Outside the versioned prefix:
+  GET    /health                            NONE      200  plain text "OK"
+
+Request envelopes: {"user":{...}}, {"article":{...}}, {"comment":{...}}.
+Route matching: /articles/feed is a static route and must win over
+/articles/{slug}. No article may ever be created with the slug "feed".
+
+Error format (every non-2xx response, always JSON, except 204/health):
+  { "errors": { "<field-or-resource>": ["message", ...] } }
+Status codes
+  400  malformed JSON body            errors.body = ["is not valid JSON"]
+  401  missing/invalid/expired token  errors.token = ["is missing"] / ["is invalid"] / ["has expired"]
+       wrong email or password        errors.credentials = ["are invalid"]   (login only)
+  403  not the owner                  errors.article = ["forbidden"] / errors.comment = ["forbidden"]
+  404  resource not found             errors.article = ["not found"] / profile / comment
+  409  duplicate email or username    errors.email = ["has already been taken"] / errors.username = [...]
+  415  request WITH a body but Content-Type is not application/json
+  422  validation failure             errors.<field> = ["<message>", ...]  (all failing fields at once)
+  500  unexpected                     errors.server = ["internal server error"]  (never leak stack traces)
+Requests without a body (DELETE, follow, favorite) must NOT require a
+Content-Type header.
+Check order for protected endpoints: authentication (401) -> existence (404)
+-> ownership (403) -> validation (422).
+
+
+==================================================
+3. BUSINESS RULES (identical in every backend)
+==================================================
+Field shapes
+- User:    { email, token, username, bio, image }
+- Profile: { username, bio, image, following }
+- Article: { slug, title, description, body, tagList, createdAt, updatedAt,
+             favorited, favoritesCount, author: Profile }
+  In the list endpoints (/articles, /articles/feed) the article items OMIT "body".
+- Comment: { id (integer), createdAt, updatedAt, body, author: Profile }
+- bio and image: return null when not set. On input, null or "" clears them.
+  Keys must always be present in responses (never omitted).
+- token: a fresh JWT returned by POST /users, POST /users/login, GET /user, PUT /user.
+
+Validation (trim whitespace first; count Unicode characters, not bytes)
+- username: required, 3-30 chars, only [A-Za-z0-9_-]; unique case-insensitively
+- email: required, valid email format; stored lowercase; unique case-insensitively
+- password: required on register, minimum 8 chars (maximum 72 for bcrypt-safety)
+- bio: maximum 300 chars
+- image: empty/null, or a valid https URL
+- title: required, max 100 | description: required, max 200 | body: required, max 20000
+- tagList: max 10 tags after trimming and de-duplication; each tag 1-30 chars,
+  no whitespace and no commas; keep first-seen order
+- comment body: required, max 1000
+- offset: integer >= 0 (default 0) | limit: integer >= 1 (default 20); values of
+  limit above 50 are clamped to 50. Non-integer or out-of-range -> 422.
+- Validation messages: short, human readable, e.g. "can't be blank",
+  "is too short (minimum is 3 characters)", "is too long (maximum is 30 characters)",
+  "is invalid". Report ALL failing fields in one 422.
+
+Partial updates (PUT /user and PUT /articles/{slug})
+- Field absent  -> unchanged. Field present -> validated and applied.
+- "absent" and "null" must be distinguishable (bio/image null = clear).
+- PUT /user: at least one field required, otherwise 422. Changing email or
+  username re-checks uniqueness (409), ignoring the user's own record.
+- PUT /articles/{slug}: only the author may update (403 otherwise).
+
+Slugs
+- Generated from the title: Unicode NFKD normalise, strip diacritics, lowercase,
+  replace runs of non [a-z0-9] with "-", trim leading/trailing "-", max 80 chars,
+  fallback "article" if empty.
+- Uniqueness: on collision append -2, -3, ... until free.
+- Reserved: "feed" (treat as taken, so the title "Feed" becomes "feed-2").
+- When the title changes on update, regenerate the slug (excluding the article's
+  own current slug from the collision check). If the title is unchanged, keep the slug.
+
+Behaviour
+- Article lists are ordered newest first (createdAt desc, then id desc).
+- GET /articles filters: tag (exact match), author (username), favorited
+  (username). Unknown author or favorited user -> 200 with empty list, NOT 404.
+  Filters combine with AND. articlesCount is the total matches ignoring offset/limit.
+- GET /articles/feed: only articles by authors the caller follows.
+- favorited / following are computed relative to the caller; anonymous = false.
+- favoritesCount = number of users who favorited the article.
+- Follow, unfollow, favorite, unfavorite are idempotent and always return the
+  updated resource. Following yourself -> 422 errors.username = ["you cannot follow yourself"].
+- GET /tags: the 20 most used tags, ordered by usage desc then alphabetically.
+- Comments: newest first. Only the comment author can delete (403). A comment id
+  that does not belong to the given slug -> 404. Comment ids are integers.
+- Deleting an article also deletes its comments and favorites.
+- Passwords are stored only as a salted slow hash (bcrypt or argon2). Never
+  return or log a password or hash.
+- Login by email (case-insensitive). Same 401 for unknown email and wrong password.
+
+
+==================================================
+4. NON-FUNCTIONAL REQUIREMENTS (all backends)
+==================================================
+Configuration (environment variables, 12-factor, with sensible dev defaults)
+  PORT=8080
+  DATABASE_*             connection settings for the stack's database
+  JWT_SECRET             required, min 32 chars, fail fast at startup if missing/short
+  JWT_TTL_MINUTES=720
+  CORS_ALLOWED_ORIGINS=http://localhost:5173
+  LOG_LEVEL=info
+  Provide a .env.example. Never commit real secrets.
+
+JWT
+- HS256. Claims: sub (user id as string), username, iat, exp.
+- Verify signature and expiry on every request that carries a token.
+
+Security
+- Parameterised queries only. No string-built SQL/query documents.
+- CORS restricted to CORS_ALLOWED_ORIGINS; allow the Authorization and
+  Content-Type headers and the methods used by the contract.
+- Add basic security headers (X-Content-Type-Options: nosniff, etc.).
+- Limit request body size (e.g. 1 MB).
+- Do not reveal whether an email exists (see login rule). Error responses never
+  contain stack traces or SQL.
+
+Logging
+- Structured (JSON) logs to stdout, level from LOG_LEVEL.
+- One access-log line per request: method, path, status, duration, request id.
+- Generate or propagate X-Request-Id and include it in every log line and
+  in the response header.
+- Log unexpected errors with stack trace server-side only.
+- Never log passwords, hashes, JWTs or the Authorization header.
+
+Other
+- Graceful shutdown. GET /health outside /api/v1.
+- Database schema created by versioned migrations (or explicit index setup for
+  MongoDB), not by ad-hoc auto-DDL at runtime.
+- Avoid N+1 queries when assembling article/comment lists with author profile,
+  favorited and favoritesCount.
+
+
+==================================================
+5. SPRING-SPECIFIC REQUIREMENTS
+==================================================
+Project layout: package by feature, not by layer, under one base package:
+  identity / profiles / articles / comments, each with web (controllers, DTOs),
+  application (services), domain (entities), persistence (repositories), plus
+  a shared/common package (errors, security, logging, config).
+  Controllers contain no business logic. Do not expose JPA entities in the API.
+
+Versioned prefix: serve everything under /api/v1 (for example via
+  spring.mvc.servlet.path or a path prefix configuration), and /health outside
+  it. Verify which mechanism works cleanly with Spring Boot 4 and Spring Security.
+
+Security
+- Stateless SecurityFilterChain, CSRF disabled, no sessions.
+- The Authorization scheme is "Token", so Spring's default Bearer handling will
+  not work as-is. Use a custom filter or a custom token resolver that reads
+  "Authorization: Token <jwt>". Prefer Spring Security's built-in JWT support
+  (Nimbus) if it can be wired cleanly; otherwise use a small custom filter and
+  state why in NOTES.md.
+- OPTIONAL-auth endpoints are permitAll but still authenticate when a token is
+  present, and return 401 when a present token is invalid.
+- Custom AuthenticationEntryPoint and AccessDeniedHandler must emit the contract
+  error JSON ({"errors":{...}}), never the Spring default error page.
+- Password hashing: BCryptPasswordEncoder (or Argon2).
+
+Errors
+- One @RestControllerAdvice mapping every exception to the contract error format
+  and status codes: MethodArgumentNotValidException / ConstraintViolation -> 422,
+  HttpMessageNotReadableException -> 400, HttpMediaTypeNotSupportedException -> 415
+  (only for requests that have a body), DataIntegrityViolation on unique index -> 409.
+- Disable Spring's default error shapes (server.error.*, ProblemDetails) so no
+  non-contract JSON escapes.
+
+JSON
+- Jackson: camelCase, ISO-8601 UTC timestamps (write-dates-as-timestamps=false),
+  never omit bio/image when null. Verify the Jackson major version that Boot 4
+  uses and write config for that version.
+- Partial updates must distinguish absent from null. Use JsonNullable or a
+  Map/JsonNode-based update DTO, not plain nullable fields.
+
+JPA / PostgreSQL
+- spring.jpa.open-in-view=false; hibernate ddl-auto=validate (Flyway owns the schema).
+- Case-insensitive uniqueness for username/email: citext or a unique index on lower(...).
+- timestamptz columns, UTC. Comment id is a bigint identity.
+- Avoid N+1 (fetch joins, @BatchSize, or dedicated projections/queries) for
+  author profile, favorited, favoritesCount and following flags.
+- Popular tags and article filters (tag/author/favorited/feed) are computed in SQL.
+
+Swagger
+- Expose Swagger UI via springdoc for developer convenience (outside /api/v1 or
+  under it, your choice, but documented). openapi.yml remains the only source of
+  truth; the generated docs must not become a second contract.
+
+Logging
+- Logback JSON encoder (e.g. logstash-logback-encoder or Boot's built-in
+  structured logging if available in Boot 4), MDC filter for X-Request-Id,
+  access log line per request.
+
+Tests
+- Testcontainers PostgreSQL; @SpringBootTest + MockMvc or RestAssured
+  integration tests per feature; unit tests for slug generation and validation.
+
+
+==================================================
+6. HOW TO WORK
+==================================================
+1. Read ../conduit-openapi/openapi.yml fully. Then write a short summary of
+   your understanding and list at most 10 ambiguities or spec defects. Record
+   them in NOTES.md, state the assumption you take for each, and continue
+   without waiting for me unless something blocks you entirely.
+2. Propose the project structure (brief), then build in this order, committing
+   after each step with a clear message:
+   a. scaffold, config, logging, error handling, health, database + migrations
+   b. identity   (register, login, current user, update user, JWT auth)
+   c. profiles   (get, follow, unfollow)
+   d. articles   (CRUD, slugs, list/filter/pagination, feed, favorites, tags)
+   e. comments
+3. Write automated tests as you go: unit tests for validation, slug generation
+   and auth; integration tests against a real database (use Testcontainers or
+   an equivalent real instance, not mocks of the database).
+4. If ../conduit-contract-tests exists, run it with
+   API_URL=http://localhost:8080/api/v1 and fix every failure.
+5. Write README.md: prerequisites, how to run the database, how to run the app,
+   how to run tests, env variables.
+6. Do not add features that are not in the contract. Keep dependencies minimal
+   and justify any non-obvious one in NOTES.md. Prefer current stable
+   versions, and verify framework APIs against official documentation instead
+   of writing from memory when the major version is new.
+
+==================================================
+7. DEFINITION OF DONE
+==================================================
+[ ] All 19 contract operations implemented under /api/v1 and /health outside it
+[ ] Every response (success and error) matches the schemas in openapi.yml
+[ ] Auth uses the "Token" scheme, 401/403/404/409/415/422 behave as specified
+[ ] Partial updates distinguish absent from null
+[ ] Slug rules, reserved "feed", pagination limits and tag ranking implemented
+[ ] No N+1 queries on list endpoints
+[ ] Structured logs with request ids; no secrets in logs
+[ ] Migrations, .env.example, README.md, NOTES.md present
+[ ] Tests pass; contract tests pass (if available)
+[ ] Starts with a single command on port 8080
