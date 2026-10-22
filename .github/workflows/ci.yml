@@ -86,7 +86,7 @@ jobs:
   conduit-docker:
     name: Conduit docker container
     runs-on: ubuntu-latest
-    needs: conduit-backend-quality
+    needs: conduit-backend-build
     timeout-minutes: 20
     env:
       JWT_SECRET: ci-only-secret-0123456789-abcdefghijklmnop
