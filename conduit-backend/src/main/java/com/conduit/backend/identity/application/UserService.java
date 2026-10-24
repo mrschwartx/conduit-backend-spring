@@ -1,140 +1,115 @@
 package com.conduit.backend.identity.application;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-
-import org.springframework.security.crypto.password.PasswordEncoder;
+import com.conduit.backend.identity.application.command.LoginCommand;
+import com.conduit.backend.identity.application.command.RegisterUserCommand;
+import com.conduit.backend.identity.application.command.UpdateUserCommand;
+import com.conduit.backend.identity.application.port.PasswordHasher;
+import com.conduit.backend.identity.application.port.TokenIssuer;
+import com.conduit.backend.identity.application.view.UserView;
+import com.conduit.backend.identity.domain.User;
+import com.conduit.backend.identity.domain.UserRepository;
+import com.conduit.backend.shared.kernel.ConflictException;
+import com.conduit.backend.shared.kernel.InvalidInputException;
+import com.conduit.backend.shared.kernel.NotFoundException;
+import com.conduit.backend.shared.kernel.UnauthorizedException;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.conduit.backend.identity.domain.User;
-import com.conduit.backend.identity.persistence.UserRepository;
-import com.conduit.backend.shared.errors.ApiException;
-import com.conduit.backend.shared.security.AuthUser;
-import com.conduit.backend.shared.security.JwtService;
-import com.conduit.backend.shared.validation.FieldErrors;
-import com.conduit.backend.shared.validation.Fields;
-import com.conduit.backend.shared.validation.Text;
-
 @Service
+@Transactional
 public class UserService {
 
-	private static final String TAKEN = "has already been taken";
+    private static final String TAKEN = "has already been taken";
 
-	private final UserRepository users;
-	private final PasswordEncoder encoder;
-	private final JwtService jwt;
-	private final Clock clock;
-	private final String dummyHash;
+    private final UserRepository userRepository;
+    private final PasswordHasher passwordHasher;
+    private final TokenIssuer tokenIssuer;
 
-	public UserService(UserRepository users, PasswordEncoder encoder, JwtService jwt, Clock clock) {
-		this.users = users;
-		this.encoder = encoder;
-		this.jwt = jwt;
-		this.clock = clock;
-		this.dummyHash = encoder.encode("not-a-real-password");
-	}
+    public UserService(UserRepository userRepository, PasswordHasher passwordHasher, TokenIssuer tokenIssuer) {
+        this.userRepository = userRepository;
+        this.passwordHasher = passwordHasher;
+        this.tokenIssuer = tokenIssuer;
+    }
 
-	@Transactional
-	public UserView register(Fields fields) {
-		FieldErrors errors = new FieldErrors();
-		String username = UserRules.username(fields.get("username"), errors);
-		String email = UserRules.email(fields.get("email"), errors);
-		String password = UserRules.password(fields.get("password"), errors);
-		errors.throwUnprocessableIfAny();
+    public UserView register(RegisterUserCommand command) {
+        String username = command.username().trim();
+        String email = normalizeEmail(command.email());
+        Map<String, List<String>> conflicts = new LinkedHashMap<>();
+        if (userRepository.existsByUsername(username)) {
+            conflicts.put("username", List.of(TAKEN));
+        }
+        if (userRepository.existsByEmail(email)) {
+            conflicts.put("email", List.of(TAKEN));
+        }
+        if (!conflicts.isEmpty()) {
+            throw new ConflictException(conflicts);
+        }
+        User user = User.register(username, email, passwordHasher.hash(command.password()));
+        return toView(userRepository.save(user));
+    }
 
-		FieldErrors conflicts = new FieldErrors();
-		if (users.countByUsername(username, 0L) > 0) {
-			conflicts.add("username", TAKEN);
-		}
-		if (users.countByEmail(email, 0L) > 0) {
-			conflicts.add("email", TAKEN);
-		}
-		conflicts.throwConflictIfAny();
+    @Transactional(readOnly = true)
+    public UserView login(LoginCommand command) {
+        User user = userRepository.findByEmail(normalizeEmail(command.email()))
+                .filter(candidate -> passwordHasher.matches(command.password(), candidate.getPasswordHash()))
+                .orElseThrow(() -> new UnauthorizedException("email or password", "is invalid"));
+        return toView(user);
+    }
 
-		User user = users.saveAndFlush(new User(username, email, encoder.encode(password), now()));
-		return view(user);
-	}
+    @Transactional(readOnly = true)
+    public UserView getCurrent(Long userId) {
+        return toView(findUser(userId));
+    }
 
-	@Transactional(readOnly = true)
-	public UserView login(Fields fields) {
-		FieldErrors errors = new FieldErrors();
-		String email = Text.required(fields.get("email"), "email", errors);
-		String password = UserRules.rawPassword(fields.get("password"), "password", errors);
-		errors.throwUnprocessableIfAny();
+    public UserView update(Long userId, UpdateUserCommand command) {
+        if (command.isEmpty()) {
+            throw new InvalidInputException("user", "at least one field is required");
+        }
+        User user = findUser(userId);
+        String username = command.username() == null ? null : command.username().trim();
+        String email = command.email() == null ? null : normalizeEmail(command.email());
+        Map<String, List<String>> conflicts = new LinkedHashMap<>();
+        if (username != null && !username.equals(user.getUsername()) && userRepository.existsByUsername(username)) {
+            conflicts.put("username", List.of(TAKEN));
+        }
+        if (email != null && !email.equals(user.getEmail()) && userRepository.existsByEmail(email)) {
+            conflicts.put("email", List.of(TAKEN));
+        }
+        if (!conflicts.isEmpty()) {
+            throw new ConflictException(conflicts);
+        }
+        if (username != null) {
+            user.rename(username);
+        }
+        if (email != null) {
+            user.changeEmail(email);
+        }
+        if (command.password() != null) {
+            user.changePasswordHash(passwordHasher.hash(command.password()));
+        }
+        if (command.bio() != null) {
+            user.changeBio(command.bio());
+        }
+        if (command.image() != null) {
+            user.changeImage(command.image());
+        }
+        return toView(userRepository.save(user));
+    }
 
-		User user = users.findByEmail(email).orElse(null);
-		boolean candidateUsable = password.getBytes(StandardCharsets.UTF_8).length <= UserRules.PASSWORD_MAX;
-		String hash = user != null ? user.getPasswordHash() : dummyHash;
-		boolean matches = encoder.matches(candidateUsable ? password : "x", hash);
-		if (user == null || !candidateUsable || !matches) {
-			throw ApiException.unauthorized("credentials", "are invalid");
-		}
-		return view(user);
-	}
+    private User findUser(Long userId) {
+        return userRepository.findById(userId).orElseThrow(() -> new NotFoundException("user"));
+    }
 
-	@Transactional(readOnly = true)
-	public UserView current(AuthUser auth) {
-		return view(load(auth));
-	}
+    private UserView toView(User user) {
+        return new UserView(user.getEmail(), tokenIssuer.issue(user.getId()), user.getUsername(),
+                user.getBio(), user.getImage());
+    }
 
-	@Transactional
-	public UserView update(AuthUser auth, Fields fields) {
-		User user = load(auth);
-		if (!(fields.has("email") || fields.has("username") || fields.has("password")
-				|| fields.has("bio") || fields.has("image"))) {
-			throw ApiException.of(ApiException.UNPROCESSABLE, "user", "at least one field is required");
-		}
-
-		FieldErrors errors = new FieldErrors();
-		String username = fields.has("username") ? UserRules.username(fields.get("username"), errors) : null;
-		String email = fields.has("email") ? UserRules.email(fields.get("email"), errors) : null;
-		String password = fields.has("password") ? UserRules.password(fields.get("password"), errors) : null;
-		String bio = fields.has("bio") ? UserRules.bio(fields.get("bio"), errors) : null;
-		String image = fields.has("image") ? UserRules.image(fields.get("image"), errors) : null;
-		errors.throwUnprocessableIfAny();
-
-		FieldErrors conflicts = new FieldErrors();
-		if (username != null && users.countByUsername(username, user.getId()) > 0) {
-			conflicts.add("username", TAKEN);
-		}
-		if (email != null && users.countByEmail(email, user.getId()) > 0) {
-			conflicts.add("email", TAKEN);
-		}
-		conflicts.throwConflictIfAny();
-
-		if (username != null) {
-			user.setUsername(username);
-		}
-		if (email != null) {
-			user.setEmail(email);
-		}
-		if (password != null) {
-			user.setPasswordHash(encoder.encode(password));
-		}
-		if (fields.has("bio")) {
-			user.setBio(bio);
-		}
-		if (fields.has("image")) {
-			user.setImage(image);
-		}
-		user.setUpdatedAt(now());
-		users.saveAndFlush(user);
-		return view(user);
-	}
-
-	private User load(AuthUser auth) {
-		return users.findById(auth.id()).orElseThrow(() -> ApiException.unauthorized("token", "is invalid"));
-	}
-
-	private UserView view(User user) {
-		return new UserView(user.getEmail(), jwt.issue(user.getId(), user.getUsername()), user.getUsername(),
-				user.getBio(), user.getImage());
-	}
-
-	private Instant now() {
-		return Instant.now(clock).truncatedTo(ChronoUnit.MILLIS);
-	}
+    private String normalizeEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
 }

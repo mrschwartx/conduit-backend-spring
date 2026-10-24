@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: conduit-backend
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/conduit}
+    username: ${DB_USERNAME:conduit}
+    password: ${DB_PASSWORD:conduit}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+conduit:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:change-this-secret-change-this-secret-32b}
+      expiration: PT24H
