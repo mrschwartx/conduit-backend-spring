@@ -59,7 +59,7 @@ final class ApiClient {
 			headers.putIfAbsent("Authorization", "Token " + token);
 		}
 		if (body != null) {
-			headers.put("Content-Type", "application/json");
+			headers.putIfAbsent("Content-Type", "application/json");
 		}
 		HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path));
 		headers.forEach(builder::header);
