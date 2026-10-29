@@ -1,211 +1,146 @@
-# Taskly Backend (Spring Boot)
+# Conduit Backend (Spring Boot)
 
-A task manager backend: sign up and sign in, manage your profile and avatar, and create, filter, sort and paginate to-do tasks. It is a REST API built with Spring Boot 4 and PostgreSQL, organised as a modular monolith with Domain-Driven Design and Clean Architecture. It is a Java port of the Express version and keeps the same HTTP contract.
+A RealWorld ("Conduit") backend: register and log in, edit your profile, follow authors, publish articles with tags, favorite articles and comment on them. It is a REST API built with Spring Boot 4 and PostgreSQL, organised as a modular monolith with Domain-Driven Design and Clean Architecture. The HTTP contract is defined by [`conduit-openapi/openapi.yml`](conduit-openapi/openapi.yml).
 
-The browser client is a separate Taskly frontend that talks to this API.
-
-**Stack:** Java 25 · Spring Boot 4 · Spring Web MVC · Spring Security · Spring Data JPA · PostgreSQL 18 · Flyway · JWT (Nimbus) · bcrypt · JUnit 5 · Docker · GitHub Actions
-
-## Contents
-
-- [Quick start](#quick-start)
-- [Features](#features)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Database](#database)
-- [API](#api)
-- [Testing](#testing)
-- [CI](#ci)
-- [Limits](#limits)
-- [Migrating from the Express version](#migrating-from-the-express-version)
-- [References](#references)
+**Stack:** Java 25 · Spring Boot 4 · Spring Web MVC · Spring Security · Spring Data JPA · PostgreSQL 18 · Flyway · JWT (jjwt) · bcrypt · JUnit 5 · Docker · GitHub Actions
 
 ## Quick start
 
 Requires JDK 25 and Docker.
 
 ```sh
-cd taskly-docker
+cd conduit-docker
 make docker/dev-up
-cd ../taskly-backend
+cd ../conduit-backend
 cp .env.example .env
 openssl rand -base64 32
 ./mvnw spring-boot:run
 ```
 
-Paste the generated value into `AUTH_SECRET` in `.env`. The API runs at http://localhost:8080 and pgAdmin at http://localhost:8081 (login `admin@taskly.dev` / `admin`, server host `taskly-postgres`, user `dev_user`, password `dev_pass`). Flyway migrations run automatically on startup. Values in `.env` are read from the working directory and can also be provided as regular environment variables.
+Paste the generated value into `AUTH_SECRET` in `.env`. The API runs at http://localhost:8080/api/v1 and pgAdmin at http://localhost:8081 (login `admin@conduit.dev` / `admin`, server host `conduit-postgres`, user `dev_user`, password `dev_pass`). Flyway migrations run on startup.
 
-| Goal               | Command                                                                       |
-| ------------------ | ----------------------------------------------------------------------------- |
-| Run in development | `./mvnw spring-boot:run`                                                      |
-| Build the jar      | `./mvnw -DskipTests package`                                                  |
-| Run the jar        | `java -jar target/taskly-backend.jar`                                         |
-| Seed demo data     | `java -jar target/taskly-backend.jar --spring.main.web-application-type=none --taskly.seed.enabled=true` |
-| Run with Docker    | `make docker/up` (from `taskly-docker`)                                       |
-| Seed in Docker     | `make docker/seed` (from `taskly-docker`)                                     |
-| Stop Docker        | `make docker/down` (from `taskly-docker`)                                     |
+| Goal            | Command                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------- |
+| Run             | `./mvnw spring-boot:run`                                                                                 |
+| Build the jar   | `./mvnw -DskipTests package`                                                                             |
+| Seed demo data  | `java -jar target/conduit-backend.jar --spring.main.web-application-type=none --conduit.seed.enabled=true` |
+| Run with Docker | `make docker/up` (from `conduit-docker`)                                                                 |
+| Seed in Docker  | `make docker/seed` (from `conduit-docker`)                                                               |
 
-`make docker/up` creates `taskly-docker/.env` with a random database password and `AUTH_SECRET` on the first run, then starts PostgreSQL and the API and waits until both are healthy. `PORT` overrides the host port in the Docker setup. The container always listens on port 8080. Demo login after seeding: `johndoe123@mail.com` / `password123`.
-
-## Features
-
-- **Authentication**: sign up, sign in and sign out with a JWT stored in an HTTP-only cookie.
-- **Users**: list users, update the profile, upload an avatar and delete the account.
-- **Tasks**: create, view, update and delete tasks.
-- **Listing**: filter by status, sort and paginate tasks.
-- **Platform**: versioned Flyway migrations, request logging, graceful shutdown, health checks on `/` and `/actuator/health`.
+Demo login after seeding: `johndoe123@mail.com` / `password123`.
 
 ## Configuration
 
-| Variable            | Default                 | Purpose                                              |
-| ------------------- | ----------------------- | ---------------------------------------------------- |
-| `APP_NAME`          | `taskly-api`            | Application name                                     |
-| `APP_HOST`          | `0.0.0.0`               | Bind address                                         |
-| `APP_PORT`          | `8080`                  | Port the API listens on                              |
-| `APP_LEVEL`         | `development`           | Environment level, `production` hardens the cookie   |
-| `DATABASE_URL`      | required                | JDBC URL, for example `jdbc:postgresql://localhost:5432/taskly_dev` |
-| `DATABASE_USER`     | required                | PostgreSQL user                                      |
-| `DATABASE_PASSWORD` | required                | PostgreSQL password                                  |
-| `DATABASE_POOL_MAX` | `10`                    | Maximum connections in the pool                      |
-| `DATABASE_TIMEOUT`  | `30000`                 | Connection timeout in milliseconds                   |
-| `AUTH_SECRET`       | required                | JWT secret, at least 32 characters                   |
-| `COOKIE_DOMAIN`     | empty                   | Domain of the auth cookie in production              |
-| `BCRYPT_ROUNDS`     | `10`                    | bcrypt cost factor                                   |
-| `CLIENT_URL`        | `http://localhost:3000` | Allowed CORS origin                                  |
-| `LOG_LEVEL`         | `debug`                 | Log level of the `com.taskly` packages               |
-| `LOG_FILE`          | `logs/taskly-api.log`   | Log file, set it empty to log to the console only    |
-| `PUBLIC_DIR`        | `public`                | Directory served as static files, holds the avatars  |
-| `SEED_ALLOW_PRODUCTION` | `false`             | Allows seeding when `APP_LEVEL` is `production`      |
+| Variable                | Default                 | Purpose                                         |
+| ----------------------- | ----------------------- | ----------------------------------------------- |
+| `APP_NAME`              | `conduit-api`           | Application name                                |
+| `APP_HOST` / `APP_PORT` | `0.0.0.0` / `8080`      | Bind address and port                           |
+| `APP_LEVEL`             | `development`           | `production` blocks seeding unless allowed      |
+| `DATABASE_URL`          | required                | JDBC URL, e.g. `jdbc:postgresql://localhost:5432/conduit_dev` |
+| `DATABASE_USER`         | required                | PostgreSQL user                                 |
+| `DATABASE_PASSWORD`     | required                | PostgreSQL password                             |
+| `DATABASE_POOL_MAX`     | `10`                    | Maximum pool size                               |
+| `DATABASE_TIMEOUT`      | `30000`                 | Connection timeout in ms                        |
+| `AUTH_SECRET`           | required                | JWT secret, at least 32 characters              |
+| `BCRYPT_ROUNDS`         | `10`                    | bcrypt cost factor                              |
+| `CLIENT_URL`            | `http://localhost:3000` | Allowed CORS origin                             |
+| `LOG_LEVEL`             | `debug`                 | Level of the `com.conduit` packages             |
+| `LOG_FILE`              | `logs/conduit-api.log`  | Log file, empty for console only                |
+| `SEED_ALLOW_PRODUCTION` | `false`                 | Allows seeding when `APP_LEVEL` is `production` |
 
-Docker only, in `taskly-docker/.env`:
+Docker only (`conduit-docker/.env`): `PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `AUTH_SECRET`, `CLIENT_URL`, `LOG_LEVEL`.
 
-| Variable      | Default  | Purpose                                 |
-| ------------- | -------- | --------------------------------------- |
-| `PORT`        | `8080`   | Host port used by Docker                |
-| `DB_NAME`     | `taskly` | PostgreSQL database name                |
-| `DB_USER`     | `taskly` | PostgreSQL user                         |
-| `DB_PASSWORD` | required | PostgreSQL password, generated by make |
-
-The frontend must set `VITE_API_BASE_URL=http://localhost:8080/api/v1` and `VITE_SERVER_BASE_URL=http://localhost:8080`.
+The React frontend (`conduit-frontend-react`) talks to `http://localhost:8080/api/v1` through its Vite or nginx `/api` proxy, so no CORS setup is needed; `CLIENT_URL` only matters for direct cross-origin calls.
 
 ## Architecture
 
-### Project layout
-
 ```
-taskly-backend/
-  src/main/java/com/taskly/backend/
-    config/        typed properties, security, adapter wiring, seed runner
-    shared/        errors, ids, event bus, HTTP and persistence helpers
-    users/         authentication and user management
-    tasks/         task management
-  src/main/resources/
-    application.yaml
-    db/migration/  Flyway migrations
-  src/test/java/   unit and integration suites
-taskly-docker/
-  taskly-backend/Dockerfile
-  docker-compose.local.yml
-  docker-compose.dev.yml
-  Makefile
-.github/workflows/ci.yml
+conduit-backend/src/main/java/com/conduit/backend/
+  config/      typed properties, security, adapter wiring, seed runner
+  shared/      errors, ids, paging, profile read model, HTTP and persistence helpers
+  users/       registration, login, current user, profiles, follows
+  articles/    articles, tags, favorites, feed
+  comments/    article comments
 ```
 
-### Module layout
+Each module has `domain/` (entities, value objects, repository and query contracts), `application/` (use cases), `infrastructure/` (JPA, JWT, bcrypt) and `presentation/` (controllers).
 
-```
-<module>/
-  domain/          entities, value objects, repository and service contracts
-  application/     use cases
-  infrastructure/  JPA, JWT, bcrypt and file system adapters
-  presentation/    REST controllers
-```
-
-### Dependency rules
-
-- Dependencies point inward: presentation and infrastructure depend on application, application depends on domain.
-- Modules never import each other. They communicate through the in-process event bus, so deleting a user removes that user's tasks.
-- Authentication is cross-cutting: a servlet filter in `config` verifies the cookie and exposes the user id to controllers as `AuthenticatedUser`.
+- Dependencies point inward. Modules share only `shared`, including the `Profile` read model used for authors.
+- Reads that need author, favorite and follow data go through `ArticleQueries` and `CommentQueries`, which batch their lookups to avoid N+1 queries.
+- Authentication is cross-cutting: a servlet filter in `config` verifies the `Authorization: Token <jwt>` header and exposes the user id as `AuthenticatedUser`. Routes with optional auth work without a header but reject an invalid one.
 
 ## Database
 
-Schema changes live in `src/main/resources/db/migration` as Flyway `V<number>__<name>.sql` files. Flyway applies pending files in order on every startup and records them in `flyway_schema_history`.
+Flyway migrations live in `src/main/resources/db/migration`.
 
-| Table   | Notes                                                                                   |
-| ------- | --------------------------------------------------------------------------------------- |
-| `users` | `id` UUID, case-insensitive unique `email` and `username`, `password_hash`, `avatar_file`, timestamps |
-| `tasks` | `id` UUID, `owner_id` UUID (foreign key to `users`), `due` timestamptz, `status` and `priority` limited by `CHECK`, indexed on `(owner_id, status)` |
-
-- Identifiers are UUIDs. API responses expose them as `_id` and `owner`.
-- Listings are ordered by `created_at` and `id`, so ties on the creation time still give a stable order.
-- `tasks.owner_id` references `users(id)` with `ON DELETE CASCADE`. The `user.deleted` event still removes a user's tasks.
-- `status` accepts `todo`, `in_progress` and `done` (default `todo`). `priority` accepts `low`, `medium` and `high`.
-- `due` is stored as a timestamp with time zone and returned as an ISO 8601 UTC string, for example `2026-12-08T10:00:00.000Z`.
+| Table          | Notes                                                                        |
+| -------------- | ---------------------------------------------------------------------------- |
+| `users`        | UUID `id`, case-insensitive unique `email` and `username`, nullable `bio` and `image` |
+| `follows`      | `(follower_id, followee_id)` primary key, self-follow blocked by `CHECK`     |
+| `articles`     | UUID `id`, unique `slug`, `author_id` with `ON DELETE CASCADE`               |
+| `article_tags` | `(article_id, tag)` primary key                                              |
+| `favorites`    | `(user_id, article_id)` primary key                                          |
+| `comments`     | identity `id`, cascades with its article and author                          |
 
 ## API
 
-All routes are under `/api/v1`. Routes other than sign up and sign in require the `taskly_token` cookie.
+All routes are under `/api/v1`. Protected routes need `Authorization: Token <jwt>`.
 
-| Method | Path                | Purpose                                         |
-| ------ | ------------------- | ----------------------------------------------- |
-| POST   | `/auth/signup`      | Register and sign in                            |
-| POST   | `/auth/signin`      | Sign in                                         |
-| GET    | `/auth/signout`     | Sign out                                        |
-| GET    | `/users`            | List users, filter with `username` and `email`  |
-| GET    | `/users/{id}`       | Get a user                                      |
-| PATCH  | `/users/update/{id}`| Update own profile                              |
-| POST   | `/users/upload/{id}`| Upload own avatar (`avatar` field, 2 MB)        |
-| DELETE | `/users/delete/{id}`| Delete own account                              |
-| POST   | `/tasks/create`     | Create a task                                   |
-| GET    | `/tasks/user/{id}`  | List own tasks with `status`, `orderBy`, `page` |
-| GET    | `/tasks/{id}`       | Get a task                                      |
-| PATCH  | `/tasks/{id}`       | Update a task                                   |
-| DELETE | `/tasks/{id}`       | Delete a task                                   |
+| Method      | Path                               | Auth     | Purpose                          |
+| ----------- | ---------------------------------- | -------- | -------------------------------- |
+| POST        | `/users`                           | none     | Register (201)                   |
+| POST        | `/users/login`                     | none     | Log in                           |
+| GET, PUT    | `/user`                            | required | Current user, update             |
+| GET         | `/profiles/{username}`             | optional | Get a profile                    |
+| POST, DELETE| `/profiles/{username}/follow`      | required | Follow, unfollow                 |
+| GET         | `/articles`                        | optional | List, filter by `tag`, `author`, `favorited`, page with `offset` and `limit` |
+| GET         | `/articles/feed`                   | required | Articles of followed authors     |
+| POST        | `/articles`                        | required | Create (201)                     |
+| GET         | `/articles/{slug}`                 | optional | Get an article                   |
+| PUT, DELETE | `/articles/{slug}`                 | required | Update, delete (204)             |
+| GET         | `/articles/{slug}/comments`        | optional | List comments                    |
+| POST        | `/articles/{slug}/comments`        | required | Add a comment (201)              |
+| DELETE      | `/articles/{slug}/comments/{id}`   | required | Delete a comment (204)           |
+| POST, DELETE| `/articles/{slug}/favorite`        | required | Favorite, unfavorite             |
+| GET         | `/tags`                            | none     | List tags                        |
 
-Errors are returned as `{ "status": <code>, "message": "<text>" }`. Unknown routes return `{ "message": "Not found" }` with status 404.
+Request bodies are wrapped (`{"user": {...}}`, `{"article": {...}}`, `{"comment": {...}}`). `GET /health` (outside the versioned prefix) returns plain text `OK`.
+
+### Errors
+
+Every non-2xx response (except 204 and `/health`) is `{"errors": {"<field-or-resource>": ["message"]}}`.
+
+| Status | When                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| 400    | Malformed JSON: `errors.body = ["is not valid JSON"]`                                                  |
+| 401    | `errors.token` is `is missing`, `is invalid` or `has expired`; wrong login: `errors.credentials = ["are invalid"]` |
+| 403    | Not the owner: `errors.article` or `errors.comment = ["forbidden"]`                                    |
+| 404    | `errors.article`, `errors.profile`, `errors.comment` = `["not found"]`; unknown path: `errors.path`    |
+| 409    | `errors.username` or `errors.email = ["has already been taken"]`                                       |
+| 415    | A request body that is not `application/json`                                                          |
+| 422    | Validation, all failing fields at once                                                                 |
+| 500    | `errors.server = ["internal server error"]`                                                            |
+
+Protected endpoints check authentication (401), then existence (404), ownership (403) and validation (422), in that order. A token that is sent to an optional-auth route but is invalid or expired also yields 401.
+
+### Rules
+
+- Text is trimmed and measured in Unicode characters. `username` 3-30 of `[A-Za-z0-9_-]`, unique ignoring case; `email` valid, stored lowercase, unique; `password` 8-72; `bio` up to 300; `image` empty, `null` or an https URL (`null` or `""` clears `bio` and `image`).
+- `title` up to 100, `description` up to 200, `body` up to 20000, comment `body` up to 1000. `tagList` has at most 10 tags after de-duplication, each 1-30 characters without whitespace or commas, in first-seen order.
+- Slugs come from the title (NFKD, diacritics stripped, lowercase, at most 80 characters, fallback `article`). Collisions get `-2`, `-3`, and `feed` is reserved. Changing the title regenerates the slug; an unchanged title keeps it.
+- `PUT /user` and `PUT /articles/{slug}` are partial updates and need at least one known field (`errors.user` or `errors.article = ["can't be empty"]`).
+- Lists are newest first. `limit` defaults to 20 and is clamped to 50; `offset` and `limit` must be integers (>= 0 and >= 1) or the response is 422. Unknown `author` or `favorited` users give an empty list.
+- `/tags` returns the 20 most used tags. Comments are listed newest first. Following yourself gives 422 (`errors.username`).
 
 ## Testing
 
 | Layer       | Command         | What it proves                                          |
 | ----------- | --------------- | ------------------------------------------------------- |
-| Unit        | `./mvnw test`   | Domain, use cases, JWT, bcrypt and file storage, no I/O |
+| Unit        | `./mvnw test`   | Domain, use cases, JWT and bcrypt without I/O           |
 | Integration | `./mvnw verify` | Full HTTP flows on a real PostgreSQL (`*IT` classes)    |
 
-Integration tests need a PostgreSQL server where the user can create databases. They read `TEST_DATABASE_URL` and default to the development database from `make docker/dev-up`. The suite creates its own temporary database, runs the migrations and drops it when the JVM exits.
-
-```sh
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres ./mvnw verify
-```
+Integration tests read `TEST_DATABASE_URL` (default: the development database), create a temporary database, run the migrations and drop it on exit.
 
 ## CI
 
-`.github/workflows/ci.yml` runs these jobs:
-
-1. **Commitlint**: commit message linting on pull requests, configured in `.commitlintrc.json`.
-2. **Build**: compiles and packages the application with JDK 25.
-3. **Tests**: unit and integration suites against a PostgreSQL 18 service.
-4. **Docker**: builds the image, starts the Compose stack, then checks `/`, signs up a user and runs the seed.
-
-## Limits
-
-- The API needs a running PostgreSQL.
-- Uploaded avatars are stored on local disk and served from `/images/users`. The Compose stack keeps them in the `taskly-avatars` volume.
-- Events are delivered in-process, so the app runs as a single instance.
-
-## Migrating from the Express version
-
-- `DATABASE_URL` is now a JDBC URL and the credentials moved to `DATABASE_USER` and `DATABASE_PASSWORD`.
-- `LOG_TO_FILE` is replaced by `LOG_FILE`. An empty value disables the log file.
-- Existing sessions stay valid: tokens use the same HS256 secret, payload and cookie name, and bcrypt hashes are compatible.
-- An existing PostgreSQL database created by the Express version already contains the tables. Start the app once with `SPRING_FLYWAY_BASELINE_ON_MIGRATE=true` and `SPRING_FLYWAY_BASELINE_VERSION=2` so Flyway records them as applied.
-
-## References
-
-- [Spring Boot](https://spring.io/projects/spring-boot)
-- [Spring Security](https://spring.io/projects/spring-security)
-- [Spring Data JPA](https://spring.io/projects/spring-data-jpa)
-- [Flyway](https://documentation.red-gate.com/flyway)
-- [PostgreSQL](https://www.postgresql.org/docs/18/)
-- [Nimbus JOSE + JWT](https://connect2id.com/products/nimbus-jose-jwt)
-- [JUnit 5](https://junit.org/junit5/)
-- [Docker multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
+`.github/workflows/ci.yml` builds with JDK 25, runs unit and integration tests against PostgreSQL 18, then builds the Docker image, checks `/health`, registers a user through `POST /api/v1/users` and runs the seed.
