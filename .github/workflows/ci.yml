@@ -27,7 +27,7 @@ jobs:
           distribution: temurin
           java-version: 25
           cache: maven
-      - run: ./mvnw -B -ntp -DskipTests verify
+      - run: chmod +x mvnw && ./mvnw -B -ntp -DskipTests verify
 
   conduit-test:
     name: conduit code tests
@@ -60,7 +60,7 @@ jobs:
           distribution: temurin
           java-version: 25
           cache: maven
-      - run: ./mvnw -B -ntp verify
+      - run: chmod +x mvnw && ./mvnw -B -ntp verify
 
   conduit-docker:
     name: conduit docker container
